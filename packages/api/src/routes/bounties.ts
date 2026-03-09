@@ -2,8 +2,9 @@ import { Hono } from 'hono';
 import { Variables } from '../middleware/auth';
 import { ensureBountyCreator, ensureBountyAssignee } from '../middleware/resource-auth';
 import { db } from '../db';
-import { bounties } from '../db/schema';
-import { eq, and, gte, lte, sql, desc, or, lt } from 'drizzle-orm';
+import { bounties, users, applications } from '../db/schema';
+import { eq, and, gte, lte, sql, desc, or, lt, count } from 'drizzle-orm';
+import { alias } from 'drizzle-orm/pg-core';
 
 const bountiesRouter = new Hono<{ Variables: Variables }>();
 
@@ -129,14 +130,6 @@ bountiesRouter.get('/', async (c) => {
 bountiesRouter.get('/:id', async (c) => {
     const id = c.req.param('id');
 
-    // We import here or from the top. We'll import dynamically if not top level, 
-    // but better to use Drizzle features from the imported `db` and `schema`.
-    // Wait, let's use separate queries or query builder.
-    // The main file has `db` and `schema` imports at the top.
-
-    const { users, applications } = await import('../db/schema');
-    const { alias } = await import('drizzle-orm/pg-core');
-    const { count } = await import('drizzle-orm');
 
     const assigneeTable = alias(users, 'assignee');
 

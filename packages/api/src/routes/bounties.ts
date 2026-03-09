@@ -128,15 +128,52 @@ bountiesRouter.get('/', async (c) => {
  */
 bountiesRouter.get('/:id', async (c) => {
     const id = c.req.param('id');
-    const bounty = await db.query.bounties.findFirst({
-        where: eq(bounties.id, id),
-    });
 
-    if (!bounty) {
+    // We import here or from the top. We'll import dynamically if not top level, 
+    // but better to use Drizzle features from the imported `db` and `schema`.
+    // Wait, let's use separate queries or query builder.
+    // The main file has `db` and `schema` imports at the top.
+
+    const { users, applications } = await import('../db/schema');
+    const { alias } = await import('drizzle-orm/pg-core');
+    const { count } = await import('drizzle-orm');
+
+    const assigneeTable = alias(users, 'assignee');
+
+    const result = await db.select({
+        bounty: bounties,
+        creator: {
+            username: users.username,
+            avatarUrl: users.avatarUrl,
+        },
+        assignee: {
+            username: assigneeTable.username,
+            avatarUrl: assigneeTable.avatarUrl,
+        },
+    })
+        .from(bounties)
+        .leftJoin(users, eq(bounties.creatorId, users.id))
+        .leftJoin(assigneeTable, eq(bounties.assigneeId, assigneeTable.id))
+        .where(eq(bounties.id, id));
+
+    if (!result || result.length === 0) {
         return c.json({ error: 'Bounty not found' }, 404);
     }
 
-    return c.json(bounty);
+    const bountyData = result[0];
+
+    const appCountResult = await db.select({ count: count() })
+        .from(applications)
+        .where(eq(applications.bountyId, id));
+
+    const applicationCount = appCountResult[0]?.count || 0;
+
+    return c.json({
+        ...bountyData.bounty,
+        creator: bountyData.creator,
+        assignee: bountyData.bounty.assigneeId ? bountyData.assignee : null,
+        applicationCount,
+    });
 });
 
 /**

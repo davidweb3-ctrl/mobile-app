@@ -5,6 +5,13 @@ import { db } from '../db';
 import { bounties, users, applications } from '../db/schema';
 import { eq, and, gte, lte, sql, desc, or, lt, count } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
+import { z } from 'zod';
+
+const applySchema = z.object({
+    cover_letter: z.string().trim().min(1, 'cover_letter is required and must be a non-empty string'),
+    estimated_time: z.number().int().nonnegative().optional().default(0),
+    experience_links: z.array(z.string()).optional().default([]),
+});
 
 const bountiesRouter = new Hono<{ Variables: Variables }>();
 
@@ -271,35 +278,29 @@ bountiesRouter.post('/:id/apply', async (c) => {
     }
 
     // Parse and validate body
-    let body: Record<string, unknown>;
-    try {
-        body = await c.req.json();
-    } catch {
+    const rawBody = await c.req.json().catch(() => null);
+    if (!rawBody) {
         return c.json({ error: 'Invalid JSON body' }, 400);
     }
 
-    const { cover_letter, estimated_time, experience_links } = body;
-
-    if (!cover_letter || typeof cover_letter !== 'string' || cover_letter.trim() === '') {
-        return c.json({ error: 'cover_letter is required and must be a non-empty string' }, 400);
+    const validation = applySchema.safeParse(rawBody);
+    if (!validation.success) {
+        return c.json({ error: validation.error.flatten().fieldErrors }, 400);
     }
 
-    const estimatedTime = estimated_time !== undefined ? estimated_time : 0;
-    if (typeof estimatedTime !== 'number' || !Number.isInteger(estimatedTime) || estimatedTime < 0) {
-        return c.json({ error: 'estimated_time must be a non-negative integer' }, 400);
-    }
-
-    const experienceLinks = experience_links !== undefined ? experience_links : [];
-    if (!Array.isArray(experienceLinks) || experienceLinks.some((l) => typeof l !== 'string')) {
-        return c.json({ error: 'experience_links must be an array of strings' }, 400);
-    }
+    const {
+        cover_letter: coverLetter,
+        estimated_time: estimatedTime,
+        experience_links: experienceLinks,
+    } = validation.data;
 
     // Insert application
     try {
+        // Note: user.id is the JWT 'sub' claim, mapped by the auth middleware
         const [application] = await db.insert(applications).values({
             bountyId: id,
             applicantId: user.id,
-            coverLetter: cover_letter.trim(),
+            coverLetter,
             estimatedTime,
             experienceLinks,
         }).returning();

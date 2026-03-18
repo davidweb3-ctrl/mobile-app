@@ -17,3 +17,9 @@ export class InvalidBountyStatusError extends AppError {
         super(message, 400, 'INVALID_BOUNTY_STATUS');
     }
 }
+
+export class InvalidDeadlineError extends AppError {
+    constructor(message: string) {
+        super(message, 400, 'INVALID_DEADLINE');
+    }
+}

@@ -7,7 +7,7 @@ import { alias } from 'drizzle-orm/pg-core';
 import { z } from 'zod';
 import { zValidator } from '@hono/zod-validator';
 import { ensureBountyAssignee } from '../middleware/resource-auth';
-import { BountyNotFoundError, InvalidBountyStatusError } from '../utils/errors';
+import { BountyNotFoundError, InvalidBountyStatusError, InvalidDeadlineError } from '../utils/errors';
 
 const tasksRouter = new Hono<{ Variables: Variables }>();
 
@@ -188,7 +188,7 @@ tasksRouter.post(
                 }
 
                 if (bounty.deadline && new_deadline <= bounty.deadline) {
-                    throw new Error('New deadline must be after the current deadline');
+                    throw new InvalidDeadlineError('New deadline must be after the current deadline');
                 }
 
                 // 2. Create extension request
@@ -210,7 +210,7 @@ tasksRouter.post(
             if (err instanceof InvalidBountyStatusError) {
                 return c.json({ error: err.message }, 400);
             }
-            if (err instanceof Error && err.message === 'New deadline must be after the current deadline') {
+            if (err instanceof InvalidDeadlineError) {
                 return c.json({ error: err.message }, 400);
             }
             // Handle PostgreSQL unique constraint violation

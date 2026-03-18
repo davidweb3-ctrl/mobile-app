@@ -18,7 +18,9 @@ const submitWorkSchema = z.object({
 });
 
 const extendDeadlineSchema = z.object({
-    new_deadline: z.coerce.date(),
+    new_deadline: z.coerce.date().refine((date) => date > new Date(), {
+        message: 'New deadline must be in the future',
+    }),
 });
 
 /**
@@ -185,6 +187,10 @@ tasksRouter.post(
                     throw new InvalidBountyStatusError(`Cannot extend deadline for bounty with status: ${bounty.status}`);
                 }
 
+                if (bounty.deadline && new_deadline <= bounty.deadline) {
+                    throw new Error('New deadline must be after the current deadline');
+                }
+
                 // 2. Create extension request
                 const [extensionRequest] = await tx.insert(extensionRequests).values({
                     bountyId: id,
@@ -202,6 +208,9 @@ tasksRouter.post(
                 return c.json({ error: err.message }, 404);
             }
             if (err instanceof InvalidBountyStatusError) {
+                return c.json({ error: err.message }, 400);
+            }
+            if (err instanceof Error && err.message === 'New deadline must be after the current deadline') {
                 return c.json({ error: err.message }, 400);
             }
             // Handle PostgreSQL unique constraint violation

@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeAll, vi, beforeEach } from 'vitest';
 import { createApp } from '../app';
 import { verify } from 'hono/jwt';
+
+
 import { db } from '../db';
-import { BountyNotFoundError, InvalidBountyStatusError } from '../utils/errors';
 
 // Mock hono/jwt verify
 vi.mock('hono/jwt', () => ({
@@ -85,6 +86,59 @@ describe('POST /api/tasks/:id/extend', () => {
         const body = await res.json();
         expect(body.success).toBe(false);
         expect(body.error).toBeDefined();
+    });
+
+    it('should return 400 if validation fails (deadline in the past)', async () => {
+        const pastDate = new Date(Date.now() - 86400000).toISOString();
+        const res = await app.request('/api/tasks/b-123/extend', {
+            method: 'POST',
+            body: JSON.stringify({ new_deadline: pastDate }),
+            headers: {
+                Authorization: 'Bearer valid.token',
+                'Content-Type': 'application/json'
+            },
+        });
+
+        expect(res.status).toBe(400);
+        const body = await res.json();
+        expect(body.success).toBe(false);
+        expect(body.error).toBeDefined();
+    });
+
+    it('should return 400 if new deadline is before or equal to current deadline', async () => {
+        const currentDeadline = new Date('2030-01-02T00:00:00Z');
+        // Because of the Zod refine, this needs to be a future date still, 
+        // just not after the currentDeadline, to get past Zod and trigger the DB-level error.
+        // Assuming current time is ~ 2026, setting it to 2030-01-01 is perfectly fine.
+        const earlierDate = new Date('2030-01-01T00:00:00Z');
+
+        vi.mocked(db.transaction).mockImplementation(async (cb: any) => {
+            const txMock = {
+                query: {
+                    bounties: {
+                        findFirst: vi.fn().mockResolvedValue({ id: 'b-123', status: 'assigned', deadline: currentDeadline }),
+                    },
+                },
+            };
+            try {
+                return await cb(txMock);
+            } catch (err) {
+                throw err;
+            }
+        });
+
+        const res = await app.request('/api/tasks/b-123/extend', {
+            method: 'POST',
+            body: JSON.stringify({ new_deadline: earlierDate.toISOString() }),
+            headers: {
+                Authorization: 'Bearer valid.token',
+                'Content-Type': 'application/json'
+            },
+        });
+
+        expect(res.status).toBe(400);
+        const body = await res.json();
+        expect(body.error).toBe('New deadline must be after the current deadline');
     });
 
     it('should return 404 if bounty is not found', async () => {

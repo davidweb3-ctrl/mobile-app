@@ -173,6 +173,26 @@ describe('GET /api/submissions/:id', () => {
         expect(body.error).toBe('Submission not found');
     });
 
+    it('should return 404 if attempting to access another user\'s submission (IDOR protection)', async () => {
+        // Query will return empty array because of the added `eq(submissions.developerId, user.id)` clause
+        const mockWhere = vi.fn().mockResolvedValue([]);
+        const mockLeftJoin = vi.fn().mockReturnValue({ where: mockWhere });
+        const mockFrom = vi.fn().mockReturnValue({ leftJoin: mockLeftJoin });
+
+        vi.mocked(db.select).mockReturnValue({ from: mockFrom } as any);
+
+        const res = await app.request('/api/submissions/123e4567-e89b-12d3-a456-426614174000', {
+            method: 'GET',
+            headers: {
+                Authorization: 'Bearer valid.token'
+            },
+        });
+
+        expect(res.status).toBe(404);
+        const body = await res.json();
+        expect(body.error).toBe('Submission not found');
+    });
+
     it('should return submission details with dispute', async () => {
         const mockSubmission = {
             id: '123e4567-e89b-12d3-a456-426614174000',

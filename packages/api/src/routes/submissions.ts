@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { Variables } from '../middleware/auth';
 import { db } from '../db';
 import { bounties, submissions, disputes } from '../db/schema';
-import { eq, desc, count } from 'drizzle-orm';
+import { eq, desc, count, and } from 'drizzle-orm';
 import { z } from 'zod';
 import { zValidator } from '@hono/zod-validator';
 
@@ -93,7 +93,7 @@ submissionsRouter.get(
         })
         .from(submissions)
         .leftJoin(disputes, eq(submissions.id, disputes.submissionId))
-        .where(eq(submissions.id, id));
+        .where(and(eq(submissions.id, id), eq(submissions.developerId, user.id)));
 
         if (result.length === 0) {
             return c.json({ error: 'Submission not found' }, 404);

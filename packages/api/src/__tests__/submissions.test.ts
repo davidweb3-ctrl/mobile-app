@@ -72,7 +72,7 @@ describe('GET /api/submissions/mine', () => {
         const mockJoin = vi.fn().mockReturnValue({ where: mockWhere1 });
         const mockFrom1 = vi.fn().mockReturnValue({ innerJoin: mockJoin });
 
-        const mockWhere2 = vi.fn().mockResolvedValue([{ id: 's-1' }, { id: 's-2' }]);
+        const mockWhere2 = vi.fn().mockResolvedValue([{ count: 2 }]);
         const mockFrom2 = vi.fn().mockReturnValue({ where: mockWhere2 });
 
         vi.mocked(db.select).mockImplementation((...args) => {

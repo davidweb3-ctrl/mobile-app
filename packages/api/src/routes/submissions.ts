@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { Variables } from '../middleware/auth';
 import { db } from '../db';
 import { bounties, submissions } from '../db/schema';
-import { eq, desc } from 'drizzle-orm';
+import { eq, desc, count } from 'drizzle-orm';
 import { z } from 'zod';
 import { zValidator } from '@hono/zod-validator';
 
@@ -48,13 +48,13 @@ submissionsRouter.get(
         .offset(offset);
 
         // Get total count for pagination metadata
-        const totalCountResult = await db.select({
-            id: submissions.id
+        const [totalCountResult] = await db.select({
+            count: count()
         })
         .from(submissions)
         .where(eq(submissions.developerId, user.id));
 
-        const total = totalCountResult.length;
+        const total = totalCountResult.count;
 
         return c.json({
             data: results,

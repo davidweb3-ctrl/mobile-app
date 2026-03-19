@@ -110,3 +110,145 @@ describe('GET /api/submissions/mine', () => {
         expect(body.meta.totalPages).toBe(1);
     });
 });
+
+describe('GET /api/submissions/:id', () => {
+    let app: ReturnType<typeof createApp>;
+
+    beforeAll(() => {
+        app = createApp();
+        process.env.JWT_PUBLIC_KEY = '-----BEGIN PUBLIC KEY-----\nfake\n-----END PUBLIC KEY-----';
+    });
+
+    beforeEach(() => {
+        vi.clearAllMocks();
+        // Default auth bypass
+        vi.mocked(verify).mockResolvedValue({
+            sub: 'test-user-id',
+            id: 'test-user-id',
+            username: 'testuser',
+            exp: Math.floor(Date.now() / 1000) + 3600,
+        });
+    });
+
+    it('should return 401 if unauthorized', async () => {
+        vi.mocked(verify).mockRejectedValue(new Error('Invalid token'));
+
+        const res = await app.request('/api/submissions/123e4567-e89b-12d3-a456-426614174000', {
+            method: 'GET',
+            headers: {
+                Authorization: 'Bearer invalid.token'
+            },
+        });
+
+        expect(res.status).toBe(401);
+    });
+
+    it('should return 400 for invalid UUID', async () => {
+        const res = await app.request('/api/submissions/invalid-id', {
+            method: 'GET',
+            headers: {
+                Authorization: 'Bearer valid.token'
+            },
+        });
+
+        expect(res.status).toBe(400);
+    });
+
+    it('should return 404 if submission is not found', async () => {
+        const mockWhere = vi.fn().mockResolvedValue([]);
+        const mockLeftJoin = vi.fn().mockReturnValue({ where: mockWhere });
+        const mockFrom = vi.fn().mockReturnValue({ leftJoin: mockLeftJoin });
+
+        vi.mocked(db.select).mockReturnValue({ from: mockFrom } as any);
+
+        const res = await app.request('/api/submissions/123e4567-e89b-12d3-a456-426614174000', {
+            method: 'GET',
+            headers: {
+                Authorization: 'Bearer valid.token'
+            },
+        });
+
+        expect(res.status).toBe(404);
+        const body = await res.json();
+        expect(body.error).toBe('Submission not found');
+    });
+
+    it('should return 404 if attempting to access another user\'s submission (IDOR protection)', async () => {
+        // Query will return empty array because of the added `eq(submissions.developerId, user.id)` clause
+        const mockWhere = vi.fn().mockResolvedValue([]);
+        const mockLeftJoin = vi.fn().mockReturnValue({ where: mockWhere });
+        const mockFrom = vi.fn().mockReturnValue({ leftJoin: mockLeftJoin });
+
+        vi.mocked(db.select).mockReturnValue({ from: mockFrom } as any);
+
+        const res = await app.request('/api/submissions/123e4567-e89b-12d3-a456-426614174000', {
+            method: 'GET',
+            headers: {
+                Authorization: 'Bearer valid.token'
+            },
+        });
+
+        expect(res.status).toBe(404);
+        const body = await res.json();
+        expect(body.error).toBe('Submission not found');
+    });
+
+    it('should return submission details with dispute', async () => {
+        const mockSubmission = {
+            id: '123e4567-e89b-12d3-a456-426614174000',
+            status: 'rejected',
+            rejectionReason: 'Code does not compile'
+        };
+        const mockDispute = {
+            id: 'd-1',
+            reason: 'It compiles on my machine',
+            status: 'open'
+        };
+
+        const mockWhere = vi.fn().mockResolvedValue([{ submission: mockSubmission, dispute: mockDispute }]);
+        const mockLeftJoin = vi.fn().mockReturnValue({ where: mockWhere });
+        const mockFrom = vi.fn().mockReturnValue({ leftJoin: mockLeftJoin });
+
+        vi.mocked(db.select).mockReturnValue({ from: mockFrom } as any);
+
+        const res = await app.request('/api/submissions/123e4567-e89b-12d3-a456-426614174000', {
+            method: 'GET',
+            headers: {
+                Authorization: 'Bearer valid.token'
+            },
+        });
+
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.data.id).toBe(mockSubmission.id);
+        expect(body.data.rejectionReason).toBe('Code does not compile');
+        expect(body.data.dispute.id).toBe('d-1');
+        expect(body.data.dispute.reason).toBe('It compiles on my machine');
+    });
+
+    it('should return submission details without dispute', async () => {
+        const mockSubmission = {
+            id: '123e4567-e89b-12d3-a456-426614174000',
+            status: 'approved',
+        };
+
+        const mockWhere = vi.fn().mockResolvedValue([{ submission: mockSubmission, dispute: null }]);
+        const mockLeftJoin = vi.fn().mockReturnValue({ where: mockWhere });
+        const mockFrom = vi.fn().mockReturnValue({ leftJoin: mockLeftJoin });
+
+        vi.mocked(db.select).mockReturnValue({ from: mockFrom } as any);
+
+        const res = await app.request('/api/submissions/123e4567-e89b-12d3-a456-426614174000', {
+            method: 'GET',
+            headers: {
+                Authorization: 'Bearer valid.token'
+            },
+        });
+
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.data.id).toBe(mockSubmission.id);
+        expect(body.data.status).toBe('approved');
+        expect(body.data.dispute).toBeNull();
+    });
+});

@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { Variables } from '../middleware/auth';
 import { db } from '../db';
-import { bounties, submissions, disputes } from '../db/schema';
+import { bounties, submissions, disputes, transactions } from '../db/schema';
 import { eq, desc, count, and } from 'drizzle-orm';
 import { z } from 'zod';
 import { zValidator } from '@hono/zod-validator';
@@ -11,6 +11,10 @@ const submissionsRouter = new Hono<{ Variables: Variables }>();
 const paginationSchema = z.object({
     page: z.coerce.number().int().min(1).optional().default(1),
     limit: z.coerce.number().int().min(1).max(100).optional().default(10),
+});
+
+const rejectSchema = z.object({
+    rejection_reason: z.string().min(1, { message: 'Rejection reason is required' }),
 });
 
 const disputeSchema = z.object({
@@ -178,6 +182,150 @@ submissionsRouter.post(
             return c.json({ data: createdDispute }, 201);
         } catch (error) {
             return c.json({ error: 'Failed to create dispute or submission was modified concurrently' }, 409);
+        }
+    }
+);
+
+/**
+ * POST /api/submissions/:id/approve
+ * Approves a submission and triggers payment payout to the developer.
+ * Must be accessed by the bounty creator.
+ */
+submissionsRouter.post(
+    '/:id/approve',
+    zValidator('param', idSchema),
+    async (c) => {
+        const user = c.get('user');
+        if (!user) {
+            return c.json({ error: 'Unauthorized' }, 401);
+        }
+
+        const { id } = c.req.valid('param');
+
+        const result = await db.select({
+            submission: submissions,
+            bounty: bounties,
+        })
+        .from(submissions)
+        .innerJoin(bounties, eq(submissions.bountyId, bounties.id))
+        .where(eq(submissions.id, id));
+
+        if (result.length === 0) {
+            return c.json({ error: 'Submission not found' }, 404);
+        }
+
+        const { submission, bounty } = result[0];
+
+        if (bounty.creatorId !== user.id) {
+            return c.json({ error: 'Forbidden. Only the bounty creator can approve submissions.' }, 403);
+        }
+
+        if (submission.status !== 'pending' && submission.status !== 'disputed') {
+            return c.json({ error: 'Only pending or disputed submissions can be approved.' }, 400);
+        }
+
+        // Use a transaction to mark the submission as approved and create a payout transaction.
+        try {
+            await db.transaction(async (tx) => {
+                const updated = await tx.update(submissions)
+                    .set({ status: 'approved' })
+                    .where(and(
+                        eq(submissions.id, id),
+                        eq(submissions.status, submission.status)
+                    ))
+                    .returning({ id: submissions.id });
+
+                if (updated.length === 0) {
+                    tx.rollback();
+                }
+
+                // Create a payment transaction
+                await tx.insert(transactions).values({
+                    userId: submission.developerId,
+                    type: 'bounty_payout',
+                    amountUsdc: bounty.amountUsdc,
+                    bountyId: bounty.id,
+                    status: 'pending'
+                });
+                
+                // Update the bounty status to completed
+                await tx.update(bounties)
+                    .set({ status: 'completed' })
+                    .where(eq(bounties.id, bounty.id));
+            });
+
+            return c.json({ message: 'Submission approved and payment triggered successfully' }, 200);
+        } catch (error) {
+            return c.json({ error: 'Failed to approve submission or it was modified concurrently' }, 409);
+        }
+    }
+);
+
+/**
+ * POST /api/submissions/:id/reject
+ * Rejects a submission and requires a reason.
+ * Must be accessed by the bounty creator.
+ */
+submissionsRouter.post(
+    '/:id/reject',
+    zValidator('param', idSchema),
+    zValidator('json', rejectSchema),
+    async (c) => {
+        const user = c.get('user');
+        if (!user) {
+            return c.json({ error: 'Unauthorized' }, 401);
+        }
+
+        const { id } = c.req.valid('param');
+        const { rejection_reason } = c.req.valid('json');
+
+        const result = await db.select({
+            submission: submissions,
+            bounty: bounties,
+        })
+        .from(submissions)
+        .innerJoin(bounties, eq(submissions.bountyId, bounties.id))
+        .where(eq(submissions.id, id));
+
+        if (result.length === 0) {
+            return c.json({ error: 'Submission not found' }, 404);
+        }
+
+        const { submission, bounty } = result[0];
+
+        if (bounty.creatorId !== user.id) {
+            return c.json({ error: 'Forbidden. Only the bounty creator can reject submissions.' }, 403);
+        }
+
+        if (submission.status !== 'pending' && submission.status !== 'disputed') {
+            return c.json({ error: 'Only pending or disputed submissions can be rejected.' }, 400);
+        }
+
+        try {
+            await db.transaction(async (tx) => {
+                const updated = await tx.update(submissions)
+                    .set({ 
+                        status: 'rejected',
+                        rejectionReason: rejection_reason
+                    })
+                    .where(and(
+                        eq(submissions.id, id),
+                        eq(submissions.status, submission.status)
+                    ))
+                    .returning({ id: submissions.id });
+                    
+                if (updated.length === 0) {
+                    tx.rollback();
+                }
+
+                await tx.update(bounties)
+                    .set({ status: 'assigned' })
+                    .where(eq(bounties.id, bounty.id));
+            });
+
+            return c.json({ message: 'Submission rejected successfully' }, 200);
+        } catch (error) {
+            return c.json({ error: 'Failed to reject submission or it was modified concurrently' }, 409);
         }
     }
 );

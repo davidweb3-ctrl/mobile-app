@@ -119,9 +119,16 @@ submissionsRouter.get(
     }
 );
 
+
+const disputeSchema = z.object({
+    reason: z.string().min(1).max(2000),
+    evidenceLinks: z.array(z.string().url()).optional().default([]),
+});
+
 /**
  * POST /api/submissions/:id/dispute
- * Allows developer to dispute a rejected submission with reason and evidence_links
+ * Opens a dispute for a rejected submission.
+ * Validates that submission was rejected and belongs to the authenticated user.
  */
 submissionsRouter.post(
     '/:id/dispute',
@@ -134,57 +141,75 @@ submissionsRouter.post(
         }
 
         const { id } = c.req.valid('param');
-        const { reason, evidence_links } = c.req.valid('json');
+        const { reason, evidenceLinks } = c.req.valid('json');
 
-        const result = await db.select()
-            .from(submissions)
-            .where(and(eq(submissions.id, id), eq(submissions.developerId, user.id)));
-
-        if (result.length === 0) {
-            return c.json({ error: 'Submission not found' }, 404);
-        }
-
-        const submission = result[0];
-
-        if (submission.status !== 'rejected') {
-            return c.json({ error: 'Only rejected submissions can be disputed' }, 400);
-        }
-
-        // Check if a dispute already exists
-        const existingDisputes = await db.select()
-            .from(disputes)
-            .where(eq(disputes.submissionId, id));
-
-        if (existingDisputes.length > 0) {
-            return c.json({ error: 'A dispute already exists for this submission' }, 400);
-        }
-
-        // Use a transaction to mark the submission as disputed and record the dispute
         try {
             const [createdDispute] = await db.transaction(async (tx) => {
-                const updated = await tx.update(submissions)
-                    .set({ status: 'disputed' })
-                    .where(and(eq(submissions.id, id), eq(submissions.status, 'rejected')))
-                    .returning({ id: submissions.id });
+                // Check if submission exists and belongs to user
+                const [submission] = await tx
+                    .select()
+                    .from(submissions)
+                    .where(and(
+                        eq(submissions.id, id),
+                        eq(submissions.developerId, user.id)
+                    ));
 
-                if (updated.length === 0) {
+                if (!submission) {
                     tx.rollback();
+                    return c.json({ error: 'Submission not found' }, 404);
                 }
 
-                return await tx.insert(disputes).values({
-                    submissionId: id,
-                    reason,
-                    evidenceLinks: evidence_links,
-                    status: 'open'
-                }).returning();
+                // Validate submission was rejected
+                if (submission.status !== 'rejected') {
+                    tx.rollback();
+                    return c.json({
+                        error: 'Only rejected submissions can be disputed',
+                        currentStatus: submission.status
+                    }, 400);
+                }
+
+                // Check if dispute already exists
+                const [existingDispute] = await tx
+                    .select()
+                    .from(disputes)
+                    .where(eq(disputes.submissionId, id));
+
+                if (existingDispute) {
+                    tx.rollback();
+                    return c.json({
+                        error: 'Dispute already exists for this submission',
+                        disputeId: existingDispute.id
+                    }, 409);
+                }
+
+                // Update submission status to disputed
+                await tx
+                    .update(submissions)
+                    .set({ status: 'disputed' })
+                    .where(eq(submissions.id, id));
+
+                // Create dispute record
+                return await tx
+                    .insert(disputes)
+                    .values({
+                        submissionId: id,
+                        reason,
+                        evidenceLinks,
+                        status: 'open',
+                    })
+                    .returning();
             });
 
-            return c.json({ data: createdDispute }, 201);
+            return c.json({
+                data: createdDispute,
+                message: 'Dispute opened successfully',
+            }, 201);
         } catch (error) {
             return c.json({ error: 'Failed to create dispute or submission was modified concurrently' }, 409);
         }
     }
 );
+
 
 /**
  * POST /api/submissions/:id/approve
@@ -247,7 +272,7 @@ submissionsRouter.post(
                     bountyId: bounty.id,
                     status: 'pending'
                 });
-                
+
                 // Update the bounty status to completed
                 await tx.update(bounties)
                     .set({ status: 'completed' })
@@ -304,7 +329,7 @@ submissionsRouter.post(
         try {
             await db.transaction(async (tx) => {
                 const updated = await tx.update(submissions)
-                    .set({ 
+                    .set({
                         status: 'rejected',
                         rejectionReason: rejection_reason
                     })
@@ -313,7 +338,7 @@ submissionsRouter.post(
                         eq(submissions.status, submission.status)
                     ))
                     .returning({ id: submissions.id });
-                    
+
                 if (updated.length === 0) {
                     tx.rollback();
                 }

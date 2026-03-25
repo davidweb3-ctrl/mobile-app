@@ -412,4 +412,42 @@ describe('POST /api/submissions/:id/dispute', () => {
         // Restore original transaction just in case
         vi.restoreAllMocks();
     });
+
+    it('should return 409 if submission is modified concurrently', async () => {
+        const mockSubmissionWhere = vi.fn().mockResolvedValue([{ id: 'sub-id', status: 'rejected' }]);
+        const mockSubmissionFrom = vi.fn().mockReturnValue({ where: mockSubmissionWhere });
+
+        const mockDisputeWhere = vi.fn().mockResolvedValue([]);
+        const mockDisputeFrom = vi.fn().mockReturnValue({ where: mockDisputeWhere });
+
+        vi.mocked(db.select)
+            .mockReturnValueOnce({ from: mockSubmissionFrom } as any)
+            .mockReturnValueOnce({ from: mockDisputeFrom } as any);
+
+        // Mock database transaction to simulate concurrent modification (0 rows updated)
+        const mockUpdateReturning = vi.fn().mockResolvedValue([]);
+        const mockUpdateWhere = vi.fn().mockReturnValue({ returning: mockUpdateReturning });
+        const mockUpdateSet = vi.fn().mockReturnValue({ where: mockUpdateWhere });
+        const mockUpdate = vi.fn().mockReturnValue({ set: mockUpdateSet });
+
+        db.transaction = vi.fn().mockImplementation(async (cb) => {
+            return cb({
+                update: mockUpdate,
+                rollback: () => { throw new Error('Rollback'); }
+            });
+        });
+
+        const res = await app.request('/api/submissions/123e4567-e89b-12d3-a456-426614174000/dispute', {
+            method: 'POST',
+            headers: {
+                Authorization: 'Bearer valid.token',
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ reason: 'Unfair rejection' })
+        });
+
+        expect(res.status).toBe(409);
+        const body = await res.json();
+        expect(body.error).toBe('Failed to create dispute or submission was modified concurrently');
+    });
 });

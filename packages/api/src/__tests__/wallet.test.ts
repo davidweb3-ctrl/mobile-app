@@ -116,8 +116,8 @@ describe('provisionWallet', () => {
 
         await expect(provisionWallet(mockUserId)).rejects.toThrow('Network error');
 
-        // DB should NOT have been updated since createAccount failed
-        expect(db.update).not.toHaveBeenCalled();
+        // DB SHOULD have been updated (keys persist before funding to prevent fund loss)
+        expect(db.update).toHaveBeenCalledTimes(1);
     });
 
     it('should throw if setupTrustline fails', async () => {
@@ -125,8 +125,8 @@ describe('provisionWallet', () => {
 
         await expect(provisionWallet(mockUserId)).rejects.toThrow('Trustline error');
 
-        // DB should NOT have been updated since trustline setup failed
-        expect(db.update).not.toHaveBeenCalled();
+        // DB SHOULD have been updated (keys persist before funding to prevent fund loss)
+        expect(db.update).toHaveBeenCalledTimes(1);
     });
 
     it('should default to TESTNET when STELLAR_NETWORK is not set', async () => {

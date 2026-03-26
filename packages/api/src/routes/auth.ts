@@ -138,6 +138,7 @@ auth.get('/github/callback', async (c) => {
             }
 
             // Provision Stellar wallet in background — don't block auth flow
+            // TODO: Move this to a reliable background job queue (e.g., BullMQ) to ensure retries on failure
             provisionWallet(newUser.id).catch((err) => {
                 console.error(`[Wallet Provisioning] Failed for user ${newUser.id}:`, err);
             });

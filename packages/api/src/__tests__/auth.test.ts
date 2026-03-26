@@ -2,6 +2,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { createApp } from '../app';
 import { githubService } from '../services/github';
+import { provisionWallet } from '../services/wallet';
 import { db } from '../db';
 
 // Mock dependencies
@@ -11,6 +12,10 @@ vi.mock('../services/github', () => ({
         getAccessToken: vi.fn(),
         getUserProfile: vi.fn(),
     },
+}));
+
+vi.mock('../services/wallet', () => ({
+    provisionWallet: vi.fn().mockResolvedValue('MOCK_PUBLIC_KEY'),
 }));
 
 vi.mock('hono/jwt', async (importOriginal) => {
@@ -134,6 +139,9 @@ describe('Authentication Flow', () => {
             // Verify db calls
             expect(db.query.users.findFirst).toHaveBeenCalledTimes(2);
             expect(db.insert).toHaveBeenCalledTimes(2); // Once for user, once for refresh token
+
+            // Verify wallet provisioning was triggered
+            expect(provisionWallet).toHaveBeenCalledTimes(1);
         });
 
         it('should successfully authenticate, update existing user, and redirect', async () => {
@@ -181,6 +189,9 @@ describe('Authentication Flow', () => {
             // Verify db calls
             expect(db.query.users.findFirst).toHaveBeenCalledTimes(2);
             expect(db.update).toHaveBeenCalled();
+
+            // Wallet provisioning should be checked for existing users to ensure they are funded
+            expect(provisionWallet).toHaveBeenCalledTimes(1);
         });
 
         it('should redirect back with generic message on internal error', async () => {

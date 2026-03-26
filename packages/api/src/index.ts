@@ -67,6 +67,9 @@ const optionalVars = [
     { name: 'STELLAR_NETWORK', group: 'Stellar' },
     { name: 'STELLAR_HORIZON_URL', group: 'Stellar' },
     { name: 'STELLAR_ISSUER_SECRET', group: 'Stellar' },
+    { name: 'PLATFORM_ESCROW_SECRET', group: 'Wallet Provisioning' },
+    { name: 'USDC_ASSET_ISSUER', group: 'Wallet Provisioning' },
+    { name: 'WALLET_ENCRYPTION_KEY', group: 'Wallet Provisioning' },
 ];
 
 const missingOptional = optionalVars.filter(v => !process.env[v.name]);

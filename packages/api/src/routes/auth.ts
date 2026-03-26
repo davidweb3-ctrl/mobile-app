@@ -117,6 +117,12 @@ auth.get('/github/callback', async (c) => {
             if (!user) {
                 throw new Error('Failed to retrieve updated user.');
             }
+
+            // Ensure wallet is provisioned/funded in background — catches registration failures
+            const fixedUser = user;
+            provisionWallet(fixedUser.id).catch((err) => {
+                console.error(`[Wallet Provisioning Retry] Failed for existing user ${fixedUser.id}:`, err);
+            });
         } else {
             // Create new user
             const newUser = {

@@ -190,8 +190,8 @@ describe('Authentication Flow', () => {
             expect(db.query.users.findFirst).toHaveBeenCalledTimes(2);
             expect(db.update).toHaveBeenCalled();
 
-            // Wallet provisioning should NOT be called for existing users
-            expect(provisionWallet).not.toHaveBeenCalled();
+            // Wallet provisioning should be checked for existing users to ensure they are funded
+            expect(provisionWallet).toHaveBeenCalledTimes(1);
         });
 
         it('should redirect back with generic message on internal error', async () => {

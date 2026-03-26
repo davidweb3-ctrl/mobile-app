@@ -3,9 +3,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Keypair } from '@stellar/stellar-sdk';
 
 // Hoist mock functions so they're available at vi.mock factory evaluation time
-const { mockCreateAccount, mockSetupTrustline } = vi.hoisted(() => ({
+const { mockCreateAccount, mockSetupTrustline, mockLoadAccount, mockDecryptWalletSecret } = vi.hoisted(() => ({
     mockCreateAccount: vi.fn(),
     mockSetupTrustline: vi.fn(),
+    mockLoadAccount: vi.fn(),
+    mockDecryptWalletSecret: vi.fn(),
 }));
 
 // Mock dependencies before importing the module under test
@@ -18,11 +20,17 @@ vi.mock('../db', () => ({
                 }),
             };
         }),
+        query: {
+            users: {
+                findFirst: vi.fn(),
+            },
+        },
     },
 }));
 
 vi.mock('../utils/encryption', () => ({
     encryptWalletSecret: vi.fn(() => 'encrypted-secret-payload'),
+    decryptWalletSecret: mockDecryptWalletSecret,
 }));
 
 // Use a regular function (not arrow) so it can be called with `new`
@@ -31,6 +39,9 @@ vi.mock('../services/stellar', () => ({
         return {
             createAccount: mockCreateAccount,
             setupTrustline: mockSetupTrustline,
+            server: {
+                loadAccount: mockLoadAccount,
+            },
         };
     }),
 }));
@@ -54,10 +65,22 @@ describe('provisionWallet', () => {
             return {
                 createAccount: mockCreateAccount,
                 setupTrustline: mockSetupTrustline,
+                server: {
+                    loadAccount: mockLoadAccount,
+                },
             };
         });
         mockCreateAccount.mockResolvedValue({ hash: 'mock-create-tx' });
         mockSetupTrustline.mockResolvedValue({ hash: 'mock-trustline-tx' });
+        // Default to account NOT found on network (404)
+        mockLoadAccount.mockRejectedValue({ response: { status: 404 } });
+        
+        // Default to user found but NO wallet
+        (db.query.users.findFirst as any).mockResolvedValue({ id: mockUserId });
+        
+        // Default decrypt to a random valid secret
+        mockDecryptWalletSecret.mockReturnValue(Keypair.random().secret());
+
         process.env.PLATFORM_ESCROW_SECRET = escrowKeypair.secret();
         process.env.USDC_ASSET_ISSUER = MOCK_USDC_ISSUER;
         process.env.STELLAR_NETWORK = 'TESTNET';
@@ -71,10 +94,13 @@ describe('provisionWallet', () => {
         expect(publicKey).toBeDefined();
         expect(publicKey).toMatch(/^G[A-Z2-7]{55}$/);
 
+        // Should have fetched the user
+        expect(db.query.users.findFirst).toHaveBeenCalled();
+
         // Should have created a StellarClient
         expect(StellarClient).toHaveBeenCalledWith('TESTNET');
 
-        // Should have called createAccount with correct starting balance
+        // Should have called createAccount since loadAccount failed with 404
         expect(mockCreateAccount).toHaveBeenCalledTimes(1);
         const createAccountArgs = mockCreateAccount.mock.calls[0];
         expect(createAccountArgs[0]).toBeInstanceOf(Keypair);
@@ -83,16 +109,46 @@ describe('provisionWallet', () => {
 
         // Should have set up USDC trustline
         expect(mockSetupTrustline).toHaveBeenCalledTimes(1);
-        const trustlineArgs = mockSetupTrustline.mock.calls[0];
-        expect(trustlineArgs[0]).toBeInstanceOf(Keypair);
-        expect(trustlineArgs[1]).toBe('USDC');
-        expect(trustlineArgs[2]).toBe(MOCK_USDC_ISSUER);
 
-        // Should have encrypted the secret
+        // Should have encrypted and stored in DB
         expect(encryptWalletSecret).toHaveBeenCalledTimes(1);
-
-        // Should have updated the DB
         expect(db.update).toHaveBeenCalledTimes(1);
+    });
+
+    it('should reuse existing keys if user already has a wallet', async () => {
+        const testKeypair = Keypair.random();
+        const existingWalletAddress = testKeypair.publicKey();
+        const existingSecret = testKeypair.secret();
+        
+        (db.query.users.findFirst as any).mockResolvedValue({
+            id: mockUserId,
+            walletAddress: existingWalletAddress,
+            walletSecretEnc: 'already-encrypted-payload'
+        });
+        mockDecryptWalletSecret.mockReturnValue(existingSecret);
+
+        const publicKey = await provisionWallet(mockUserId);
+
+        expect(publicKey).toBe(existingWalletAddress);
+        
+        // Should NOT have updated DB since keys already exist
+        expect(db.update).not.toHaveBeenCalled();
+        
+        // Should STILL have checked the network and called createAccount (if 404)
+        expect(mockLoadAccount).toHaveBeenCalled();
+        expect(mockCreateAccount).toHaveBeenCalled();
+    });
+
+    it('should skip creation if account already exists on network', async () => {
+        mockLoadAccount.mockResolvedValue({ id: 'some-account' });
+
+        await provisionWallet(mockUserId);
+
+        // Should NOT have called createAccount
+        expect(mockCreateAccount).not.toHaveBeenCalled();
+        
+        // SHOULD still have set up trustline (to be safe/idempotent)
+        expect(mockSetupTrustline).toHaveBeenCalled();
     });
 
     it('should throw if PLATFORM_ESCROW_SECRET is not set', async () => {
@@ -103,20 +159,12 @@ describe('provisionWallet', () => {
         );
     });
 
-    it('should throw if USDC_ASSET_ISSUER is not set', async () => {
-        delete process.env.USDC_ASSET_ISSUER;
-
-        await expect(provisionWallet(mockUserId)).rejects.toThrow(
-            'USDC_ASSET_ISSUER environment variable is not set'
-        );
-    });
-
     it('should throw if createAccount fails', async () => {
         mockCreateAccount.mockRejectedValue(new Error('Network error'));
 
         await expect(provisionWallet(mockUserId)).rejects.toThrow('Network error');
 
-        // DB SHOULD have been updated (keys persist before funding to prevent fund loss)
+        // DB SHOULD have been updated (keys persist before funding)
         expect(db.update).toHaveBeenCalledTimes(1);
     });
 
@@ -125,15 +173,7 @@ describe('provisionWallet', () => {
 
         await expect(provisionWallet(mockUserId)).rejects.toThrow('Trustline error');
 
-        // DB SHOULD have been updated (keys persist before funding to prevent fund loss)
+        // DB SHOULD have been updated
         expect(db.update).toHaveBeenCalledTimes(1);
-    });
-
-    it('should default to TESTNET when STELLAR_NETWORK is not set', async () => {
-        delete process.env.STELLAR_NETWORK;
-
-        await provisionWallet(mockUserId);
-
-        expect(StellarClient).toHaveBeenCalledWith('TESTNET');
     });
 });

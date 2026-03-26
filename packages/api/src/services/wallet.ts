@@ -31,31 +31,60 @@ export async function provisionWallet(userId: string): Promise<string> {
     }
 
     const network = (process.env.STELLAR_NETWORK || 'TESTNET') as NetworkType;
+    const stellarClient = new StellarClient(network);
 
-    // 1. Generate a new keypair
-    const newKeypair = Keypair.random();
+    // 1. Fetch current user to check for existing keys
+    const user = await db.query.users.findFirst({
+        where: eq(users.id, userId),
+    });
+
+    if (!user) {
+        throw new Error(`User ${userId} not found`);
+    }
+
+    let keypair: Keypair;
+    
+    if (user.walletAddress && user.walletSecretEnc) {
+        // Reuse existing keys
+        const { decryptWalletSecret } = await import('../utils/encryption');
+        const secret = decryptWalletSecret(user.walletSecretEnc);
+        keypair = Keypair.fromSecret(secret);
+    } else {
+        // 1a. Generate a new keypair if none exists
+        keypair = Keypair.random();
+        
+        // 2. Encrypt the secret key and store in DB FIRST to prevent loss of funds
+        const encryptedSecret = encryptWalletSecret(keypair.secret());
+
+        await db.update(users)
+            .set({
+                walletAddress: keypair.publicKey(),
+                walletSecretEnc: encryptedSecret,
+                updatedAt: new Date(),
+            })
+            .where(eq(users.id, userId));
+    }
+
     const escrowKeypair = Keypair.fromSecret(escrowSecret);
 
-    // 2. Encrypt the secret key and store in DB FIRST to prevent loss of funds
-    const encryptedSecret = encryptWalletSecret(newKeypair.secret());
+    // 3. Create and fund the account from platform escrow ONLY if it doesn't exist
+    try {
+        await stellarClient.server.loadAccount(keypair.publicKey());
+        console.log(`[Wallet Provisioning] Account ${keypair.publicKey()} already exists on ${network}. Skipping creation.`);
+    } catch (err: any) {
+        if (err.response?.status === 404) {
+            console.log(`[Wallet Provisioning] Creating and funding account ${keypair.publicKey()} on ${network}...`);
+            const startingBalance = '3'; // Enough for base reserve (1 XLM) + trustline reserve (0.5 XLM) + fees
+            await stellarClient.createAccount(keypair, escrowKeypair, startingBalance);
+        } else {
+            throw err;
+        }
+    }
 
-    await db.update(users)
-        .set({
-            walletAddress: newKeypair.publicKey(),
-            walletSecretEnc: encryptedSecret,
-            updatedAt: new Date(),
-        })
-        .where(eq(users.id, userId));
+    // 4. Set up USDC trustline (also idempotent in Stellar protocol if already exists, but we can check or just call it)
+    await stellarClient.setupTrustline(keypair, 'USDC', usdcIssuer);
 
-    // 3. Create and fund the account from platform escrow
-    const stellarClient = new StellarClient(network);
-    const startingBalance = '3'; // Enough for base reserve (1 XLM) + trustline reserve (0.5 XLM) + fees
-    await stellarClient.createAccount(newKeypair, escrowKeypair, startingBalance);
+    console.log(`[Wallet Provisioning] Successfully provisioned/verified wallet for user ${userId}: ${keypair.publicKey()}`);
 
-    // 4. Set up USDC trustline
-    await stellarClient.setupTrustline(newKeypair, 'USDC', usdcIssuer);
-
-    console.log(`[Wallet Provisioning] Successfully provisioned wallet for user ${userId}: ${newKeypair.publicKey()}`);
-
-    return newKeypair.publicKey();
+    return keypair.publicKey();
 }

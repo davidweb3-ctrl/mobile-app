@@ -198,21 +198,11 @@ submissionsRouter.post(
                     .returning({ id: submissions.id });
 
                 if (!updated) {
-                    return {
-                        error: 'Submission was modified by another request. Please refresh and try again.',
-                        status: 409
-                    };
+                    tx.rollback();
                 }
 
                 return { dispute, status: 201 };
             });
-
-            if (result.error) {
-                return c.json(
-                    { error: result.error, disputeId: result.disputeId, currentStatus: result.currentStatus },
-                    result.status as 400 | 404 | 409
-                );
-            }
 
             return c.json({
                 data: result.dispute,
@@ -221,8 +211,8 @@ submissionsRouter.post(
         } catch (error) {
             console.error('Transaction failed:', error);
             return c.json({
-                error: 'Failed to create dispute due to a database error. Please try again.'
-            }, 500);
+                error: 'Failed to create dispute or submission was modified concurrently'
+            }, 409);
         }
     }
 );
